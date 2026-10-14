@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { isSafeForDiet, matchesCuisine, loadData, saveData } from "./nomlyUtils.js";
 import "./App.css";
 
 const dietaryOptions = [
@@ -245,6 +246,24 @@ function App() {
   const [recommendMood, setRecommendMood] = useState("budget");
   const [recommendMaxPrice, setRecommendMaxPrice] = useState(7);
 
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    const saved = loadData("local-prototype");
+    if (!saved) { setRestored(true); return; }
+    if (typeof saved.budget === "number") setBudget(saved.budget);
+    if (typeof saved.remaining === "number") setRemaining(saved.remaining);
+    if (Array.isArray(saved.dietaryPrefs)) setDietaryPrefs(saved.dietaryPrefs);
+    if (Array.isArray(saved.cuisinePrefs)) setCuisinePrefs(saved.cuisinePrefs);
+    if (Array.isArray(saved.completedMeals)) setCompletedMeals(saved.completedMeals);
+    if (Array.isArray(saved.favourites)) setFavourites(saved.favourites);
+    setRestored(true);
+  }, []);
+
+  useEffect(() => {
+    if (!restored) return;
+    saveData("local-prototype", { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites });
+  }, [restored, budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites]);
+
   const [newRecipe, setNewRecipe] = useState({
     name: "",
     ingredients: "",
@@ -299,6 +318,7 @@ function App() {
     setPage("home");
   }
 
+  // Prototype-only sign-in; replace with Firebase Auth from the current Nomly ZIP before production.
   function handleLogin() {
     if (!user.username || !user.password) {
       alert("Please enter your username/email and password.");
@@ -530,7 +550,7 @@ function App() {
   const todaySuggestions = allSuggestions.slice(0, 5);
 
   const combinedRecommendations = useMemo(() => {
-    const restaurantOptions = foodPlaces.map((place) => ({
+    const restaurantOptions = foodPlaces.filter((place) => place.verified === true).map((place) => ({
       ...place,
       category: "Food Place",
       mapAddress: place.address
@@ -551,6 +571,8 @@ function App() {
 
     return [...restaurantOptions, ...recipeOptions]
       .filter((item) => Number(item.price) <= Number(recommendMaxPrice))
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
+      .filter((item) => matchesCuisine(item, cuisinePrefs))
       .filter((item) => {
         const moodText = Array.isArray(item.mood) ? item.mood.join(" ") : item.mood;
         const text = `${item.name} ${item.cuisine} ${item.type} ${moodText}`.toLowerCase();
@@ -558,7 +580,7 @@ function App() {
         return recommendMood === "any" || text.includes(recommendMood.toLowerCase());
       })
       .sort((a, b) => a.price - b.price);
-  }, [homeRecipes, recommendMaxPrice, recommendMood]);
+  }, [homeRecipes, recommendMaxPrice, recommendMood, dietaryPrefs, cuisinePrefs]);
 
   if (showSplash) {
     return <SplashScreen onFinish={() => setShowSplash(false)} />;
@@ -873,7 +895,7 @@ function App() {
             <div className="places">
               {combinedRecommendations.length === 0 ? (
                 <div className="card">
-                  <p>No matching options found. Try increasing your maximum price.</p>
+                  <p>No verified options match your budget and dietary preferences. Try adjusting filters. Restaurant data will appear after local vendors are verified.</p>
                 </div>
               ) : (
                 combinedRecommendations.map((item) => (
