@@ -1,4 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { auth } from "./firebase.js";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  reload,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile
+} from "firebase/auth";
 import { isSafeForDiet, matchesCuisine, loadData, saveData } from "./nomlyUtils.js";
 import "./App.css";
 
@@ -206,6 +216,20 @@ function SplashScreen({ onFinish }) {
 }
 
 function App() {
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) { setIsLoggedIn(false); return; }
+      try {
+        await reload(firebaseUser);
+        setIsLoggedIn(Boolean(firebaseUser.emailVerified));
+      } catch (error) {
+        console.error("Could not restore Firebase session:", error.code || error.message);
+        setIsLoggedIn(false);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const [showSplash, setShowSplash] = useState(true);
   const [authMode, setAuthMode] = useState("login");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -313,20 +337,54 @@ function App() {
     setOnboardingStep(3);
   }
 
-  function finishOnboarding() {
-    setIsLoggedIn(true);
-    setPage("home");
-  }
-
-  // Prototype-only sign-in; replace with Firebase Auth from the current Nomly ZIP before production.
-  function handleLogin() {
-    if (!user.username || !user.password) {
-      alert("Please enter your username/email and password.");
+  async function finishOnboarding() {
+    if (!user.email || !user.password || !user.name) {
+      alert("Please provide your name, email and password.");
       return;
     }
+    try {
+      const credentials = await createUserWithEmailAndPassword(auth, user.email.trim(), user.password);
+      await updateProfile(credentials.user, { displayName: user.name.trim() });
+      try {
+        await sendEmailVerification(credentials.user);
+        alert("Account created. Check your email for the verification link, then log in.");
+      } catch (emailError) {
+        alert(`Account created, but verification email failed: ${emailError.code || emailError.message}. Check Firebase Authorized domains, then log in to resend.`);
+      }
+      await signOut(auth);
+      setAuthMode("login");
+      setOnboardingStep(0);
+      setUser((previous) => ({ ...previous, password: "", username: previous.email }));
+    } catch (error) {
+      alert(`Sign up failed: ${error.code || error.message}`);
+    }
+  }
 
-    setIsLoggedIn(true);
-    setPage("home");
+  async function handleLogin() {
+    const email = (user.username || user.email || "").trim();
+    if (!email || !user.password) {
+      alert("Please enter your email and password.");
+      return;
+    }
+    try {
+      const credentials = await signInWithEmailAndPassword(auth, email, user.password);
+      await reload(credentials.user);
+      setUser((previous) => ({ ...previous, password: "" }));
+      if (!credentials.user.emailVerified) {
+        try {
+          await sendEmailVerification(credentials.user);
+          alert("Please verify your email. A verification link has been sent.");
+        } catch (emailError) {
+          alert(`Email verification couldn't be sent: ${emailError.code || emailError.message}. Check your Firebase authorized domains.`);
+        }
+        await signOut(auth);
+        return;
+      }
+      setIsLoggedIn(true);
+      setPage("home");
+    } catch (error) {
+      alert(`Login failed: ${error.code || error.message}`);
+    }
   }
 
   function toggleArrayValue(value, list, setter) {
