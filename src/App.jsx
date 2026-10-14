@@ -1,4 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { auth } from "./firebase.js";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  reload,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile
+} from "firebase/auth";
+import { isSafeForDiet, matchesCuisine, loadData, saveData } from "./nomlyUtils.js";
 import "./App.css";
 
 const dietaryOptions = [
@@ -205,6 +216,29 @@ function SplashScreen({ onFinish }) {
 }
 
 function App() {
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) { setIsLoggedIn(false); setActiveUid(null); return; }
+      try {
+        await reload(firebaseUser);
+        if (!firebaseUser.emailVerified) { setIsLoggedIn(false); setActiveUid(null); return; }
+        const saved = loadData(firebaseUser.uid);
+        setBudget(typeof saved?.budget === "number" ? saved.budget : 70);
+        setRemaining(typeof saved?.remaining === "number" ? saved.remaining : 70);
+        setDietaryPrefs(Array.isArray(saved?.dietaryPrefs) ? saved.dietaryPrefs : []);
+        setCuisinePrefs(Array.isArray(saved?.cuisinePrefs) ? saved.cuisinePrefs : []);
+        setCompletedMeals(Array.isArray(saved?.completedMeals) ? saved.completedMeals : []);
+        setFavourites(Array.isArray(saved?.favourites) ? saved.favourites : []);
+        setActiveUid(firebaseUser.uid);
+        setIsLoggedIn(true);
+      } catch (error) {
+        console.error("Could not restore Firebase session:", error.code || error.message);
+        setIsLoggedIn(false);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const [showSplash, setShowSplash] = useState(true);
   const [authMode, setAuthMode] = useState("login");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -244,6 +278,13 @@ function App() {
 
   const [recommendMood, setRecommendMood] = useState("budget");
   const [recommendMaxPrice, setRecommendMaxPrice] = useState(7);
+
+  const [activeUid, setActiveUid] = useState(null);
+
+  useEffect(() => {
+    if (!activeUid) return;
+    saveData(activeUid, { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites });
+  }, [activeUid, budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites]);
 
   const [newRecipe, setNewRecipe] = useState({
     name: "",
@@ -294,19 +335,54 @@ function App() {
     setOnboardingStep(3);
   }
 
-  function finishOnboarding() {
-    setIsLoggedIn(true);
-    setPage("home");
-  }
-
-  function handleLogin() {
-    if (!user.username || !user.password) {
-      alert("Please enter your username/email and password.");
+  async function finishOnboarding() {
+    if (!user.email || !user.password || !user.name) {
+      alert("Please provide your name, email and password.");
       return;
     }
+    try {
+      const credentials = await createUserWithEmailAndPassword(auth, user.email.trim(), user.password);
+      await updateProfile(credentials.user, { displayName: user.name.trim() });
+      try {
+        await sendEmailVerification(credentials.user);
+        alert("Account created. Check your email for the verification link, then log in.");
+      } catch (emailError) {
+        alert(`Account created, but verification email failed: ${emailError.code || emailError.message}. Check Firebase Authorized domains, then log in to resend.`);
+      }
+      await signOut(auth);
+      setAuthMode("login");
+      setOnboardingStep(0);
+      setUser((previous) => ({ ...previous, password: "", username: previous.email }));
+    } catch (error) {
+      alert(`Sign up failed: ${error.code || error.message}`);
+    }
+  }
 
-    setIsLoggedIn(true);
-    setPage("home");
+  async function handleLogin() {
+    const email = (user.username || user.email || "").trim();
+    if (!email || !user.password) {
+      alert("Please enter your email and password.");
+      return;
+    }
+    try {
+      const credentials = await signInWithEmailAndPassword(auth, email, user.password);
+      await reload(credentials.user);
+      setUser((previous) => ({ ...previous, password: "" }));
+      if (!credentials.user.emailVerified) {
+        try {
+          await sendEmailVerification(credentials.user);
+          alert("Please verify your email. A verification link has been sent.");
+        } catch (emailError) {
+          alert(`Email verification couldn't be sent: ${emailError.code || emailError.message}. Check your Firebase authorized domains.`);
+        }
+        await signOut(auth);
+        return;
+      }
+      setIsLoggedIn(true);
+      setPage("home");
+    } catch (error) {
+      alert(`Login failed: ${error.code || error.message}`);
+    }
   }
 
   function toggleArrayValue(value, list, setter) {
@@ -379,6 +455,7 @@ function App() {
     const input = inputIngredients.toLowerCase();
 
     return homeRecipes
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
       .map((item) => {
         const matches = item.ingredients
           .toLowerCase()
@@ -530,7 +607,7 @@ function App() {
   const todaySuggestions = allSuggestions.slice(0, 5);
 
   const combinedRecommendations = useMemo(() => {
-    const restaurantOptions = foodPlaces.map((place) => ({
+    const restaurantOptions = foodPlaces.filter((place) => place.verified === true).map((place) => ({
       ...place,
       category: "Food Place",
       mapAddress: place.address
@@ -551,6 +628,8 @@ function App() {
 
     return [...restaurantOptions, ...recipeOptions]
       .filter((item) => Number(item.price) <= Number(recommendMaxPrice))
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
+      .filter((item) => matchesCuisine(item, cuisinePrefs))
       .filter((item) => {
         const moodText = Array.isArray(item.mood) ? item.mood.join(" ") : item.mood;
         const text = `${item.name} ${item.cuisine} ${item.type} ${moodText}`.toLowerCase();
@@ -558,7 +637,7 @@ function App() {
         return recommendMood === "any" || text.includes(recommendMood.toLowerCase());
       })
       .sort((a, b) => a.price - b.price);
-  }, [homeRecipes, recommendMaxPrice, recommendMood]);
+  }, [homeRecipes, recommendMaxPrice, recommendMood, dietaryPrefs, cuisinePrefs]);
 
   if (showSplash) {
     return <SplashScreen onFinish={() => setShowSplash(false)} />;
@@ -873,7 +952,7 @@ function App() {
             <div className="places">
               {combinedRecommendations.length === 0 ? (
                 <div className="card">
-                  <p>No matching options found. Try increasing your maximum price.</p>
+                  <p>No verified options match your budget and dietary preferences. Try adjusting filters. Restaurant data will appear after local vendors are verified.</p>
                 </div>
               ) : (
                 combinedRecommendations.map((item) => (
@@ -977,7 +1056,7 @@ function App() {
           <>
             <h2>🍳 Recipes</h2>
             <p className="muted">
-              Use Cook AI, save your own recipes, and find grocery directions for each recipe.
+              Use the recipe helper (currently rule-based), save recipes, and find grocery directions.
             </p>
 
             <div className="card form-card">
@@ -1151,7 +1230,8 @@ function App() {
               <label>Fitness Enabled</label>
               <p>{fitnessEnabled ? "Yes" : "No"}</p>
 
-              <button className="primary">Save Preferences</button>
+              <button className="primary" onClick={() => alert("Preferences are saved to this browser for your account.")}>Save Preferences</button>
+              <button className="secondary" onClick={() => signOut(auth)}>Log out</button>
             </div>
 
             <div className="card">
