@@ -218,10 +218,19 @@ function SplashScreen({ onFinish }) {
 function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!firebaseUser) { setIsLoggedIn(false); return; }
+      if (!firebaseUser) { setIsLoggedIn(false); setActiveUid(null); return; }
       try {
         await reload(firebaseUser);
-        setIsLoggedIn(Boolean(firebaseUser.emailVerified));
+        if (!firebaseUser.emailVerified) { setIsLoggedIn(false); setActiveUid(null); return; }
+        const saved = loadData(firebaseUser.uid);
+        setBudget(typeof saved?.budget === "number" ? saved.budget : 70);
+        setRemaining(typeof saved?.remaining === "number" ? saved.remaining : 70);
+        setDietaryPrefs(Array.isArray(saved?.dietaryPrefs) ? saved.dietaryPrefs : []);
+        setCuisinePrefs(Array.isArray(saved?.cuisinePrefs) ? saved.cuisinePrefs : []);
+        setCompletedMeals(Array.isArray(saved?.completedMeals) ? saved.completedMeals : []);
+        setFavourites(Array.isArray(saved?.favourites) ? saved.favourites : []);
+        setActiveUid(firebaseUser.uid);
+        setIsLoggedIn(true);
       } catch (error) {
         console.error("Could not restore Firebase session:", error.code || error.message);
         setIsLoggedIn(false);
@@ -270,23 +279,12 @@ function App() {
   const [recommendMood, setRecommendMood] = useState("budget");
   const [recommendMaxPrice, setRecommendMaxPrice] = useState(7);
 
-  const [restored, setRestored] = useState(false);
-  useEffect(() => {
-    const saved = loadData("local-prototype");
-    if (!saved) { setRestored(true); return; }
-    if (typeof saved.budget === "number") setBudget(saved.budget);
-    if (typeof saved.remaining === "number") setRemaining(saved.remaining);
-    if (Array.isArray(saved.dietaryPrefs)) setDietaryPrefs(saved.dietaryPrefs);
-    if (Array.isArray(saved.cuisinePrefs)) setCuisinePrefs(saved.cuisinePrefs);
-    if (Array.isArray(saved.completedMeals)) setCompletedMeals(saved.completedMeals);
-    if (Array.isArray(saved.favourites)) setFavourites(saved.favourites);
-    setRestored(true);
-  }, []);
+  const [activeUid, setActiveUid] = useState(null);
 
   useEffect(() => {
-    if (!restored) return;
-    saveData("local-prototype", { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites });
-  }, [restored, budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites]);
+    if (!activeUid) return;
+    saveData(activeUid, { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites });
+  }, [activeUid, budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals, favourites]);
 
   const [newRecipe, setNewRecipe] = useState({
     name: "",
@@ -457,6 +455,7 @@ function App() {
     const input = inputIngredients.toLowerCase();
 
     return homeRecipes
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
       .map((item) => {
         const matches = item.ingredients
           .toLowerCase()
@@ -1057,7 +1056,7 @@ function App() {
           <>
             <h2>🍳 Recipes</h2>
             <p className="muted">
-              Use Cook AI, save your own recipes, and find grocery directions for each recipe.
+              Use the recipe helper (currently rule-based), save recipes, and find grocery directions.
             </p>
 
             <div className="card form-card">
@@ -1231,7 +1230,8 @@ function App() {
               <label>Fitness Enabled</label>
               <p>{fitnessEnabled ? "Yes" : "No"}</p>
 
-              <button className="primary">Save Preferences</button>
+              <button className="primary" onClick={() => alert("Preferences are saved to this browser for your account.")}>Save Preferences</button>
+              <button className="secondary" onClick={() => signOut(auth)}>Log out</button>
             </div>
 
             <div className="card">
