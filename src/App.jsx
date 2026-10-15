@@ -221,6 +221,8 @@ function App() {
       if (!firebaseUser) { setIsLoggedIn(false); setActiveUid(null); return; }
       try {
         await reload(firebaseUser);
+        // Ignore a stale verification response if the user signed out meanwhile.
+        if (auth.currentUser?.uid !== firebaseUser.uid) return;
         if (!firebaseUser.emailVerified) { setIsLoggedIn(false); setActiveUid(null); return; }
         const saved = loadData(firebaseUser.uid);
         setBudget(typeof saved?.budget === "number" ? saved.budget : 70);
@@ -349,6 +351,8 @@ function App() {
       } catch (emailError) {
         alert(`Account created, but verification email failed: ${emailError.code || emailError.message}. Check Firebase Authorized domains, then log in to resend.`);
       }
+      // Preserve onboarding choices before the signup session is signed out.
+      saveData(credentials.user.uid, { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals: [], favourites: [] });
       await signOut(auth);
       setAuthMode("login");
       setOnboardingStep(0);
@@ -378,7 +382,7 @@ function App() {
         await signOut(auth);
         return;
       }
-      setIsLoggedIn(true);
+      // The auth-state listener restores the correct user's data before opening the app.
       setPage("home");
     } catch (error) {
       alert(`Login failed: ${error.code || error.message}`);
@@ -580,7 +584,7 @@ function App() {
 
   const allSuggestions = useMemo(() => {
     const restaurantOptions = foodPlaces
-      .filter((place) => place.type !== "Groceries")
+      .filter((place) => place.type !== "Groceries" && place.verified === true)
       .map((place) => ({
         ...place,
         category: "Restaurant",
@@ -600,9 +604,11 @@ function App() {
     }));
 
     return [...restaurantOptions, ...recipeOptions]
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
+      .filter((item) => matchesCuisine(item, cuisinePrefs))
       .filter((item) => Number(item.price) <= Math.max(dailyGuide + 4, 4))
       .sort((a, b) => Number(a.price) - Number(b.price));
-  }, [dailyGuide, homeRecipes]);
+  }, [dailyGuide, homeRecipes, dietaryPrefs, cuisinePrefs]);
 
   const todaySuggestions = allSuggestions.slice(0, 5);
 
