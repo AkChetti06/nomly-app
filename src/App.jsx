@@ -144,6 +144,18 @@ const startingHomeRecipes = [
   }
 ];
 
+// Illustrative recipes for the home feed until Nomly has a verified food database.
+// Costs are rough demo estimates, not live grocery or vendor prices.
+const dailyDemoRecipes = [
+  { id: "demo-tofu-rice", name: "Ginger Tofu Rice Bowl", ingredients: "tofu, rice, ginger, spinach", time: "20 min", cost: 3.5, mood: "comfort", reason: "A quick plant-based bowl for busy study days." },
+  { id: "demo-tomato-pasta", name: "Tomato Garlic Pasta", ingredients: "pasta, tomato, garlic, olive oil", time: "20 min", cost: 3.1, mood: "comfort", reason: "Simple pantry staples make an easy dinner." },
+  { id: "demo-chickpea-wrap", name: "Chickpea Cucumber Wrap", ingredients: "chickpeas, cucumber, lettuce, wrap", time: "10 min", cost: 3.6, mood: "quick", reason: "An easy no-fuss lunch between classes." },
+  { id: "demo-chicken-bowl", name: "Chicken Vegetable Rice", ingredients: "chicken, rice, carrots, spinach", time: "25 min", cost: 4.8, mood: "balanced", reason: "A filling meal with vegetables and rice." },
+  { id: "demo-potato-soup", name: "Potato Lentil Soup", ingredients: "potato, lentils, tomato, onion", time: "30 min", cost: 2.9, mood: "warm", reason: "A comforting budget-friendly meal." },
+  { id: "demo-egg-toast", name: "Scrambled Egg Toast", ingredients: "eggs, bread, tomato", time: "12 min", cost: 2.5, mood: "quick", reason: "An easy breakfast before an early class." },
+  { id: "demo-tuna-wrap", name: "Tuna Cucumber Wrap", ingredients: "tuna, cucumber, lettuce, wrap", time: "10 min", cost: 3.4, mood: "quick", reason: "A portable lunch idea for a busy day." }
+];
+
 const groceryPrices = {
   rice: 0.6,
   egg: 0.6,
@@ -221,6 +233,8 @@ function App() {
       if (!firebaseUser) { setIsLoggedIn(false); setActiveUid(null); return; }
       try {
         await reload(firebaseUser);
+        // Ignore a stale verification response if the user signed out meanwhile.
+        if (auth.currentUser?.uid !== firebaseUser.uid) return;
         if (!firebaseUser.emailVerified) { setIsLoggedIn(false); setActiveUid(null); return; }
         const saved = loadData(firebaseUser.uid);
         setBudget(typeof saved?.budget === "number" ? saved.budget : 70);
@@ -349,6 +363,8 @@ function App() {
       } catch (emailError) {
         alert(`Account created, but verification email failed: ${emailError.code || emailError.message}. Check Firebase Authorized domains, then log in to resend.`);
       }
+      // Preserve onboarding choices before the signup session is signed out.
+      saveData(credentials.user.uid, { budget, remaining, dietaryPrefs, cuisinePrefs, completedMeals: [], favourites: [] });
       await signOut(auth);
       setAuthMode("login");
       setOnboardingStep(0);
@@ -378,7 +394,7 @@ function App() {
         await signOut(auth);
         return;
       }
-      setIsLoggedIn(true);
+      // The auth-state listener restores the correct user's data before opening the app.
       setPage("home");
     } catch (error) {
       alert(`Login failed: ${error.code || error.message}`);
@@ -580,7 +596,7 @@ function App() {
 
   const allSuggestions = useMemo(() => {
     const restaurantOptions = foodPlaces
-      .filter((place) => place.type !== "Groceries")
+      .filter((place) => place.type !== "Groceries" && place.verified === true)
       .map((place) => ({
         ...place,
         category: "Restaurant",
@@ -600,11 +616,30 @@ function App() {
     }));
 
     return [...restaurantOptions, ...recipeOptions]
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
+      .filter((item) => matchesCuisine(item, cuisinePrefs))
       .filter((item) => Number(item.price) <= Math.max(dailyGuide + 4, 4))
       .sort((a, b) => Number(a.price) - Number(b.price));
-  }, [dailyGuide, homeRecipes]);
+  }, [dailyGuide, homeRecipes, dietaryPrefs, cuisinePrefs]);
 
-  const todaySuggestions = allSuggestions.slice(0, 5);
+  const todaySuggestions = useMemo(() => {
+    const examples = dailyDemoRecipes.map((item) => ({
+      ...item,
+      category: "Recipe",
+      type: "Demo meal idea",
+      price: item.cost,
+      demo: true,
+      groceryAddress: "",
+      mapAddress: ""
+    }));
+    const suggestions = [...examples, ...allSuggestions]
+      .filter((item) => isSafeForDiet(item, dietaryPrefs))
+      .filter((item) => Number(item.price) <= remaining);
+    // Rotate examples consistently once per calendar day, rather than randomly on every render.
+    const dayIndex = Math.floor(Date.now() / 86400000);
+    const offset = suggestions.length ? dayIndex % suggestions.length : 0;
+    return [...suggestions.slice(offset), ...suggestions.slice(0, offset)].slice(0, 5);
+  }, [allSuggestions, dietaryPrefs, remaining]);
 
   const combinedRecommendations = useMemo(() => {
     const restaurantOptions = foodPlaces.filter((place) => place.verified === true).map((place) => ({
@@ -871,7 +906,9 @@ function App() {
               </div>
             </header>
 
+            <p className="muted">Sample meal ideas · Estimated prices only, not verified restaurant listings. Ideas rotate daily.</p>
             <section className="today-list">
+              {todaySuggestions.length === 0 && <p className="muted">No demo meals match your dietary filters and remaining budget. Try adjusting your budget or preferences.</p>}
               {todaySuggestions.map((item) => (
                 <div className="today-card" key={item.id || item.name}>
                   <div className="today-card-top">
@@ -884,7 +921,7 @@ function App() {
                   </div>
 
                   <p className="muted">
-                    {item.type} · {item.time} · ⭐ {item.rating}
+                    {item.type} · {item.time}{item.rating && !item.demo ? ` · ⭐ ${item.rating}` : ""}
                   </p>
 
                   <p>{item.reason}</p>
@@ -909,13 +946,13 @@ function App() {
                     <button onClick={() => toggleFavourite(item)}>
                       {isFavourite(item) ? "Saved ♥" : "Favourite ♡"}
                     </button>
-                    <a
+                    {!item.demo && <a
                       href={mapLink(item.mapAddress)}
                       target="_blank"
                       rel="noreferrer"
                     >
                       Map
-                    </a>
+                    </a>}
                   </div>
                 </div>
               ))}

@@ -23,3 +23,10 @@ test('scoped persistence', () => {
   assert.equal(loadData('a').budget,50);
   assert.equal(loadData('b'),null);
 });
+
+test('plural ingredient exclusions and malformed menus', () => {
+  assert.equal(isSafeForDiet({name:'Noodles',ingredients:'eggs, soy sauce'}, ['Egg-Free']), false);
+  assert.equal(isSafeForDiet({name:'Prawn noodles',ingredients:'prawns'}, ['Vegetarian']), false);
+  assert.equal(isSafeForDiet({name:'Butter toast',ingredients:'butter'}, ['Vegan']), false);
+  assert.equal(isSafeForDiet({name:'Tofu bowl',ingredients:'tofu',menu:'none'}, ['Vegetarian']), true);
+});
